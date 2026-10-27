@@ -144,6 +144,17 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
 .err{font-size:13px;color:var(--danger);padding:8px 4px 0}
 .danger-btn{display:block;width:100%;margin-top:18px;height:48px;border-radius:14px;background:var(--surface);color:var(--danger);font-weight:700;font-size:16px}
 .plain-btn{display:block;width:100%;text-align:left;padding:14px;font-size:15px;color:var(--accent)}
+.sync-state{margin-left:8px;letter-spacing:.04em}
+.sync-state::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-right:5px;vertical-align:1px}
+.sync-state.warn::before{background:var(--danger)}
+.sync-state.busy::before{background:var(--muted)}
+.group-label{margin-top:22px;padding:0 4px;font-size:12px;color:var(--muted);letter-spacing:.08em}
+.group-label + .group{margin-top:6px}
+.field-col{display:flex;flex-direction:column;gap:4px;padding:10px 14px}
+.field-col span{font-size:13px;color:var(--muted)}
+.field-col input{font:inherit;font-size:16px;color:var(--ink);background:transparent;border:0;padding:4px 0;min-width:0;width:100%}
+.status-text{font-size:14px;color:var(--muted);text-align:right;min-width:0;overflow-wrap:anywhere}
+.plain-btn.danger-text{color:var(--danger)}
 .toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:18px;font-size:14px;z-index:30;max-width:calc(100% - 32px)}
 </style>
 </head>
@@ -153,7 +164,7 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     <div class="top-row">
       <div class="title">
         <h1 id="monthTitle"></h1>
-        <span class="roc" id="rocYear"></span>
+        <span class="roc"><span id="rocYear"></span><span class="sync-state" id="syncState" hidden></span></span>
       </div>
       <div class="nav">
         <button class="icon-btn" id="prevBtn" aria-label="上個月">‹</button>
@@ -228,12 +239,27 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
         <select id="sWeekStart"><option value="0">星期日</option><option value="1">星期一</option></select>
       </label>
     </div>
+    <div class="group-label">雲端同步（GitHub Gist）</div>
+    <div class="group" id="syncOff">
+      <label class="field-col" for="sToken"><span>GitHub Token</span>
+        <input type="password" id="sToken" placeholder="貼上 ghp_ 開頭的 token" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </label>
+      <button class="plain-btn" id="connectBtn">連線並同步</button>
+    </div>
+    <div class="group" id="syncOn" hidden>
+      <div class="field"><span>狀態</span><span class="status-text" id="syncStatus"></span></div>
+      <button class="plain-btn" id="syncNowBtn">立即同步</button>
+      <button class="plain-btn danger-text" id="disconnectBtn">中斷連線</button>
+    </div>
+    <div class="hint" id="syncHint">在 GitHub 產生一組只勾選「gist」權限的 token，iPhone 和電腦各貼一次，之後新增、修改、刪除都會自動同步。</div>
+
+    <div class="group-label">備份</div>
     <div class="group">
       <button class="plain-btn" id="exportBtn">匯出備份（.json）</button>
       <button class="plain-btn" id="importBtn">從備份匯入</button>
       <input type="file" id="importFile" accept=".json,application/json" hidden>
     </div>
-    <div class="hint">行程只存在這支手機上。換手機或清除 Safari 資料前，請先匯出備份。</div>
+    <div class="hint">沒有開啟雲端同步時，行程只存在這台裝置上。換手機或清除瀏覽器資料前，請先匯出備份。</div>
   </div>
 </div>
 
@@ -250,7 +276,8 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   var CAT = {}; CATS.forEach(function(c){ CAT[c.id] = c; });
   var WD = ["日","一","二","三","四","五","六"];
   var REPEAT_TXT = {weekly:"每週",monthly:"每月",yearly:"每年"};
-  var KEY = "cal.events.v1", PREF = "cal.prefs.v1";
+  var KEY = "cal.events.v1", PREF = "cal.prefs.v1", DEL_KEY = "cal.deleted.v1", SYNC_KEY = "cal.sync.v1";
+  var GIST_FILE = "my-calendar-sync.json";
 
   function $(id){ return document.getElementById(id); }
   function pad(n){ return (n<10?"0":"")+n; }
@@ -275,11 +302,16 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     ];
     writeJSON(KEY, events);
   }
+  var deleted = readJSON(DEL_KEY, {}) || {};   // id -> time deleted, so deletions sync too
   var prefs = readJSON(PREF, {}) || {};
   var weekStart = prefs.weekStart === 1 ? 1 : 0;
   var shown = prefs.shown || {self:true, work:true, friend:true};
 
-  function saveEvents(){ if(!writeJSON(KEY, events)) toast("儲存失敗：手機儲存空間不足或已關閉網站資料"); }
+  function writeLocal(){
+    var ok = writeJSON(KEY, events) && writeJSON(DEL_KEY, deleted);
+    if(!ok) toast("儲存失敗：裝置儲存空間不足或已關閉網站資料");
+  }
+  function saveEvents(){ writeLocal(); scheduleSync(); }
   function savePrefs(){ writeJSON(PREF, {weekStart:weekStart, shown:shown}); }
 
   /* ---------- recurrence ---------- */
@@ -391,9 +423,10 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   $("list").addEventListener("click", function(ev){
     if(ev.target.id === "emptyAdd"){ openEditor(null); return; }
     var b = ev.target.closest(".ev"); if(!b) return;
-    var e = events.filter(function(x){ return x.id === b.getAttribute("data-id"); })[0];
-    if(e) openEditor(e);
+    var i = indexOfId(b.getAttribute("data-id"));
+    if(i >= 0) openEditor(events[i]);
   });
+  function indexOfId(id){ for(var i=0;i<events.length;i++){ if(events[i].id === id) return i; } return -1; }
 
   /* ---------- sheets ---------- */
   var openSheet = null;
@@ -453,8 +486,11 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     else if(!allDay && !start) err = "請選擇開始時間";
     else if(!allDay && end && end < start) err = "結束時間不能早於開始時間";
     if(err){ $("fError").textContent = err; $("fError").hidden = false; return; }
-    var data = {title:title, cat:curCat, date:date, allDay:allDay, start:allDay?"":start, end:allDay?"":end, repeat:$("fRepeat").value, note:$("fNote").value.trim()};
-    if(editing){ Object.assign(editing, data); } else { data.id = uid(); events.push(data); }
+    var data = {title:title, cat:curCat, date:date, allDay:allDay, start:allDay?"":start, end:allDay?"":end, repeat:$("fRepeat").value, note:$("fNote").value.trim(), updated:Date.now()};
+    // look the event up by id: a background sync may have replaced the object while the sheet was open
+    var idx = editing ? indexOfId(editing.id) : -1;
+    if(idx >= 0){ events[idx] = Object.assign({}, events[idx], data); }
+    else { data.id = editing ? editing.id : uid(); events.push(data); }
     saveEvents();
     selected = date; var d = parseKey(date); view = new Date(d.getFullYear(), d.getMonth(), 1);
     if(shown[curCat] === false){ shown[curCat] = true; savePrefs(); renderFilters(); }
@@ -465,6 +501,7 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     if(!delArmed){ delArmed = true; $("deleteBtn").textContent = "再按一次確認刪除"; return; }
     var id = editing.id;
     events = events.filter(function(x){ return x.id !== id; });
+    deleted[id] = Date.now();
     saveEvents(); closeSheet(); render(); toast("已刪除");
   };
 
@@ -492,6 +529,7 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
         list.forEach(function(e){
           if(!e || !e.title || !/^\d{4}-\d{2}-\d{2}$/.test(e.date)) return;
           if(!CAT[e.cat]) e.cat = "self";
+          e.updated = e.updated || Date.now();
           if(!e.id || ids[e.id]){ if(e.id && ids[e.id]) return; e.id = uid(); }
           events.push(e); ids[e.id] = true; added++;
         });
@@ -505,13 +543,151 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   var tt;
   function toast(msg){ var t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(tt); tt = setTimeout(function(){ t.hidden = true; }, 2000); }
 
-  // refresh "today" when the app returns from background on a new day
+  /* ---------- GitHub Gist sync ---------- */
+  var sync = readJSON(SYNC_KEY, {}) || {};   // {token, gistId, last}
+  var syncing = false, syncAgain = false, syncTimer = null, discArmed = false;
+  function saveSync(){ writeJSON(SYNC_KEY, sync); }
+  function hhmm(t){ var d = new Date(t); return pad(d.getHours())+":"+pad(d.getMinutes()); }
+
+  function setSyncState(kind, short, long){
+    var s = $("syncState");
+    s.hidden = !sync.token; s.className = "sync-state" + (kind ? " "+kind : ""); s.textContent = short;
+    $("syncStatus").textContent = long || short;
+  }
+  function refreshSyncUI(){
+    var on = !!sync.token;
+    $("syncOff").hidden = on; $("syncOn").hidden = !on; $("syncHint").hidden = on;
+    discArmed = false; $("disconnectBtn").textContent = "中斷連線";
+    if(!on){ $("syncState").hidden = true; return; }
+    if(sync.last) setSyncState("", "已同步 "+hhmm(sync.last), "上次同步 "+hhmm(sync.last));
+    else setSyncState("busy", "尚未同步");
+  }
+
+  function api(path, method, body){
+    return fetch("https://api.github.com"+path, {
+      method: method || "GET", cache: "no-store",
+      headers: {"Authorization":"Bearer "+sync.token, "Accept":"application/vnd.github+json", "Content-Type":"application/json"},
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function(r){
+      if(r.status === 401 || r.status === 403) throw new Error("auth");
+      if(r.status === 404) throw new Error("notfound");
+      if(!r.ok) throw new Error("http "+r.status);
+      return r.json();
+    });
+  }
+  function payload(){
+    var list = events.slice().sort(function(a,b){ return a.id < b.id ? -1 : 1; });
+    return JSON.stringify({app:"my-calendar", version:1, events:list, deleted:deleted}, null, 1);
+  }
+  function gistFiles(content){ var f = {}; f[GIST_FILE] = {content:content}; return f; }
+  function findGist(){
+    return api("/gists?per_page=100&t="+Date.now()).then(function(list){
+      for(var i=0;i<list.length;i++){ if(list[i].files && list[i].files[GIST_FILE]) return list[i].id; }
+      return null;
+    });
+  }
+  function readGist(id){
+    return api("/gists/"+id+"?t="+Date.now()).then(function(g){
+      var f = g.files && g.files[GIST_FILE];
+      if(!f) return {text:"", data:{}};
+      var textP = f.truncated ? fetch(f.raw_url, {cache:"no-store"}).then(function(r){ return r.text(); }) : Promise.resolve(f.content || "");
+      return textP.then(function(text){ var d = {}; try{ d = JSON.parse(text) || {}; }catch(e){} return {text:text, data:d}; });
+    });
+  }
+  // newest edit of each event wins; a deletion wins over any edit made before it
+  function merge(remote){
+    var del = Object.assign({}, deleted), rdel = remote.deleted || {};
+    Object.keys(rdel).forEach(function(id){ del[id] = Math.max(del[id] || 0, rdel[id] || 0); });
+    var map = {};
+    events.concat(Array.isArray(remote.events) ? remote.events : []).forEach(function(e){
+      if(!e || !e.id) return;
+      var cur = map[e.id];
+      if(!cur || (e.updated || 0) > (cur.updated || 0)) map[e.id] = e;
+    });
+    var cutoff = Date.now() - 365*864e5;
+    Object.keys(del).forEach(function(id){ if(del[id] < cutoff) delete del[id]; });
+    var out = Object.keys(map).map(function(k){ return map[k]; })
+      .filter(function(e){ return !(del[e.id] && del[e.id] >= (e.updated || 0)); });
+    return {events:out, deleted:del};
+  }
+
+  function doSync(){
+    if(!sync.token) return Promise.resolve(false);
+    if(syncing){ syncAgain = true; return Promise.resolve(false); }
+    syncing = true; clearTimeout(syncTimer);
+    setSyncState("busy", "同步中…");
+    var idP = sync.gistId ? Promise.resolve(sync.gistId) : findGist();
+    return idP.then(function(id){
+      if(!id){
+        return api("/gists", "POST", {description:"我的行事曆同步資料（請勿刪除）", public:false, files:gistFiles(payload())})
+          .then(function(g){ sync.gistId = g.id; saveSync(); });
+      }
+      sync.gistId = id; saveSync();
+      return readGist(id).then(function(r){
+        var m = merge(r.data);
+        events = m.events; deleted = m.deleted; writeLocal(); render();
+        var out = payload();
+        if(out === r.text) return;
+        return api("/gists/"+id, "PATCH", {files:gistFiles(out)});
+      });
+    }).then(function(){
+      sync.last = Date.now(); saveSync();
+      setSyncState("", "已同步 "+hhmm(sync.last), "上次同步 "+hhmm(sync.last));
+      return true;
+    }).catch(function(err){
+      var m = err && err.message;
+      if(m === "notfound" && sync.gistId){ sync.gistId = null; saveSync(); syncAgain = true; setSyncState("busy", "重新尋找雲端資料…"); }
+      else if(m === "auth") setSyncState("warn", "Token 失效", "Token 無效、已過期或沒有 gist 權限。請中斷連線後貼上新的 token。");
+      else if(err instanceof TypeError) setSyncState("warn", "離線", "目前連不上網路，恢復連線後會自動同步。");
+      else setSyncState("warn", "同步失敗", "同步失敗（"+m+"），稍後會再試一次。");
+      return m === "auth" ? "auth" : false;
+    }).then(function(res){
+      syncing = false;
+      if(syncAgain){ syncAgain = false; setTimeout(doSync, 300); }
+      return res;
+    });
+  }
+  function scheduleSync(){
+    if(!sync.token) return;
+    clearTimeout(syncTimer); syncTimer = setTimeout(doSync, 1500);
+  }
+
+  $("connectBtn").onclick = function(){
+    var t = $("sToken").value.trim();
+    if(!t){ toast("請先貼上 GitHub token"); return; }
+    sync = {token:t}; saveSync();
+    // drop the untouched sample events so they don't get copied into the cloud
+    events = events.filter(function(e){ return e.updated || !/^範例：/.test(e.title); });
+    writeLocal(); render();
+    $("connectBtn").textContent = "連線中…"; $("connectBtn").disabled = true;
+    refreshSyncUI();
+    doSync().then(function(res){
+      $("connectBtn").textContent = "連線並同步"; $("connectBtn").disabled = false;
+      if(res === "auth"){
+        sync = {}; saveSync(); refreshSyncUI();
+        toast("Token 無效，請確認有勾選 gist 權限");
+      } else if(res === true){
+        $("sToken").value = ""; toast("已連線，之後會自動同步");
+      }
+    });
+  };
+  $("syncNowBtn").onclick = function(){ doSync(); };
+  $("disconnectBtn").onclick = function(){
+    if(!discArmed){ discArmed = true; this.textContent = "再按一次中斷（行程會留在這台裝置）"; return; }
+    sync = {}; saveSync(); refreshSyncUI(); toast("已中斷同步");
+  };
+
+  // refresh "today" and pull changes when the app comes back to the foreground
   var lastToday = todayKey();
   document.addEventListener("visibilitychange", function(){
-    if(!document.hidden && todayKey() !== lastToday){ lastToday = todayKey(); render(); }
+    if(document.hidden) return;
+    if(todayKey() !== lastToday){ lastToday = todayKey(); render(); }
+    doSync();
   });
+  window.addEventListener("online", function(){ doSync(); });
+  setInterval(function(){ if(!document.hidden) doSync(); }, 120000);
 
-  renderFilters(); renderWeekdays(); render();
+  renderFilters(); renderWeekdays(); render(); refreshSyncUI(); doSync();
 })();
 </script>
 </body>
