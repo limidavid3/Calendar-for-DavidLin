@@ -103,6 +103,14 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .ev .t{font-weight:500;font-size:15px;overflow-wrap:anywhere}
 .ev .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;font-size:12px;color:var(--muted)}
 .ev .tag{color:var(--c);font-weight:700}
+.ev{cursor:pointer}
+.ev .loc{display:flex;align-items:flex-start;gap:4px;margin-top:4px;font-size:13px;color:var(--ink);overflow-wrap:anywhere}
+.ev .loc svg{flex:none;width:14px;height:14px;margin-top:2px;fill:var(--muted)}
+.ev a.loc{color:var(--accent);text-decoration:none;font-weight:500}
+.ev a.loc svg{fill:var(--accent)}
+.ev a.loc:active{opacity:.6}
+.loc-input{font-size:16px}
+.map-preview{text-decoration:none;font-size:14px}
 .ev .note{margin-top:4px;font-size:13px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 .ev:active{filter:brightness(.97)}
 .empty{padding:28px 8px;text-align:center;color:var(--muted);font-size:14px}
@@ -218,7 +226,12 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
       </label>
     </div>
     <div class="group">
-      <textarea class="note-input" id="fNote" placeholder="備註（地點、聯絡人…）"></textarea>
+      <input class="title-input loc-input" id="fLoc" placeholder="地點（地址或店名）" autocomplete="off" enterkeyhint="done">
+      <label class="field" id="rowMap"><span>連結 Google 地圖</span><input type="checkbox" class="switch" id="fMap"></label>
+      <a class="plain-btn map-preview" id="mapPreview" href="#" target="_blank" rel="noopener" hidden>在 Google 地圖查看這個地點 ↗</a>
+    </div>
+    <div class="group">
+      <textarea class="note-input" id="fNote" placeholder="備註（聯絡人、要帶的東西…）"></textarea>
     </div>
     <div class="err" id="fError" hidden></div>
     <div class="hint" id="seriesHint" hidden>這是重複行程，修改或刪除會套用到每一次。</div>
@@ -384,14 +397,23 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     $("list").innerHTML = evs.map(function(e){
       var c = CAT[e.cat] || CATS[0];
       var meta = '<span class="tag">'+c.name+'</span>' + (e.repeat && e.repeat!=="none" ? '<span>・'+REPEAT_TXT[e.repeat]+'</span>' : '');
-      return '<button class="ev" data-id="'+e.id+'" style="--c:'+c.color+'">'+
+      var loc = "";
+      if(e.loc){
+        loc = e.map
+          ? '<a class="loc" href="'+esc(mapUrl(e.loc))+'" target="_blank" rel="noopener" aria-label="在 Google 地圖開啟 '+esc(e.loc)+'">'+PIN+'<span>'+esc(e.loc)+'　開啟地圖 ↗</span></a>'
+          : '<div class="loc">'+PIN+'<span>'+esc(e.loc)+'</span></div>';
+      }
+      return '<div class="ev" role="button" tabindex="0" data-id="'+e.id+'" style="--c:'+c.color+'">'+
         '<span class="bar"></span>'+
         '<span class="time">'+fmtRange(e)+'</span>'+
-        '<span class="body"><div class="t">'+esc(e.title)+'</div><div class="meta">'+meta+'</div>'+
-        (e.note?'<div class="note">'+esc(e.note)+'</div>':'')+'</span></button>';
+        '<span class="body"><div class="t">'+esc(e.title)+'</div><div class="meta">'+meta+'</div>'+loc+
+        (e.note?'<div class="note">'+esc(e.note)+'</div>':'')+'</span></div>';
     }).join("");
   }
   function render(){ renderMonth(); renderAgenda(); }
+  var PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
+  // official Google Maps search URL: opens the Google Maps app on iPhone if installed, otherwise the website
+  function mapUrl(q){ return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(q); }
 
   /* ---------- navigation ---------- */
   function shiftMonth(n){ view = new Date(view.getFullYear(), view.getMonth()+n, 1); renderMonth(); }
@@ -422,9 +444,13 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   });
   $("list").addEventListener("click", function(ev){
     if(ev.target.id === "emptyAdd"){ openEditor(null); return; }
+    if(ev.target.closest("a")) return; // tapping the map link opens the map, not the editor
     var b = ev.target.closest(".ev"); if(!b) return;
     var i = indexOfId(b.getAttribute("data-id"));
     if(i >= 0) openEditor(events[i]);
+  });
+  $("list").addEventListener("keydown", function(ev){
+    if((ev.key === "Enter" || ev.key === " ") && ev.target.classList.contains("ev")){ ev.preventDefault(); ev.target.click(); }
   });
   function indexOfId(id){ for(var i=0;i<events.length;i++){ if(events[i].id === id) return i; } return -1; }
 
@@ -447,6 +473,15 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   $("fCats").addEventListener("click", function(e){ var b = e.target.closest(".cat"); if(b) setCat(b.getAttribute("data-cat")); });
   function syncAllDay(){ var a = $("fAllDay").checked; $("rowStart").hidden = a; $("rowEnd").hidden = a; }
   $("fAllDay").onchange = syncAllDay;
+  // the map switch only matters once a place is typed; preview link lets you check the right spot is found
+  function syncMap(){
+    var q = $("fLoc").value.trim();
+    $("rowMap").hidden = !q;
+    $("mapPreview").hidden = !(q && $("fMap").checked);
+    if(q) $("mapPreview").href = mapUrl(q);
+  }
+  $("fLoc").addEventListener("input", syncMap);
+  $("fMap").onchange = syncMap;
   $("fStart").onchange = function(){
     // keep end one hour after start if it would be earlier
     var s = $("fStart").value, en = $("fEnd").value;
@@ -462,15 +497,17 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
       $("fTitle").value = e.title; setCat(e.cat); $("fAllDay").checked = !!e.allDay;
       $("fDate").value = e.date; $("fStart").value = e.start || "09:00"; $("fEnd").value = e.end || "10:00";
       $("fRepeat").value = e.repeat || "none"; $("fNote").value = e.note || "";
+      $("fLoc").value = e.loc || ""; $("fMap").checked = !!e.map;
     } else {
       var h = Math.min(22, new Date().getHours()+1);
       $("fTitle").value = ""; setCat(shown.self!==false?"self":(shown.work!==false?"work":"friend"));
       $("fAllDay").checked = false; $("fDate").value = selected;
       $("fStart").value = pad(h)+":00"; $("fEnd").value = pad(h+1)+":00";
       $("fRepeat").value = "none"; $("fNote").value = "";
+      $("fLoc").value = ""; $("fMap").checked = true;
     }
     $("seriesHint").hidden = !(e && e.repeat && e.repeat !== "none");
-    syncAllDay();
+    syncAllDay(); syncMap();
     showSheet("editSheet");
     if(!e) setTimeout(function(){ $("fTitle").focus(); }, 250);
   }
@@ -486,7 +523,7 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     else if(!allDay && !start) err = "請選擇開始時間";
     else if(!allDay && end && end < start) err = "結束時間不能早於開始時間";
     if(err){ $("fError").textContent = err; $("fError").hidden = false; return; }
-    var data = {title:title, cat:curCat, date:date, allDay:allDay, start:allDay?"":start, end:allDay?"":end, repeat:$("fRepeat").value, note:$("fNote").value.trim(), updated:Date.now()};
+    var data = {title:title, cat:curCat, date:date, allDay:allDay, start:allDay?"":start, end:allDay?"":end, repeat:$("fRepeat").value, note:$("fNote").value.trim(), loc:$("fLoc").value.trim(), map:$("fMap").checked && !!$("fLoc").value.trim(), updated:Date.now()};
     // look the event up by id: a background sync may have replaced the object while the sheet was open
     var idx = editing ? indexOfId(editing.id) : -1;
     if(idx >= 0){ events[idx] = Object.assign({}, events[idx], data); }
