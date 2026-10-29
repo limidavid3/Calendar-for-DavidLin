@@ -63,8 +63,18 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .nav{display:flex;align-items:center;gap:4px}
 .icon-btn{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-size:22px;color:var(--ink)}
 .icon-btn:active{background:var(--accent-soft)}
-.today-btn{height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--line);font-size:13px;font-weight:500}
-.today-btn:active{background:var(--accent-soft)}
+.mode-row{display:flex;gap:8px;margin-bottom:12px}
+.mode-btn{flex:1;height:38px;border-radius:19px;border:1px solid var(--line);background:var(--surface);font-size:15px;font-weight:500}
+.mode-btn:active{background:var(--accent-soft)}
+.mode-btn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+/* whole-month list: one header per day */
+.day-group{display:flex;flex-direction:column;gap:8px}
+.day-group + .day-group{margin-top:10px}
+.day-label{display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;padding:4px 2px;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+.day-label .wd{font-weight:400;color:var(--muted);font-size:13px}
+.day-label.sun{color:var(--sun)}
+.day-label.is-today::after{content:"今天";font-size:11px;font-weight:700;color:var(--accent-ink);background:var(--accent);padding:1px 7px;border-radius:9px;letter-spacing:.06em}
+.day-group.past{opacity:.55}
 
 /* category filter */
 .filters{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
@@ -169,6 +179,10 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
 <body>
 <div class="wrap">
   <header class="top">
+    <div class="mode-row">
+      <button class="mode-btn" id="todayBtn">回到今天</button>
+      <button class="mode-btn" id="monthBtn" aria-pressed="false">檢視整月</button>
+    </div>
     <div class="top-row">
       <div class="title">
         <h1 id="monthTitle"></h1>
@@ -176,7 +190,6 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
       </div>
       <div class="nav">
         <button class="icon-btn" id="prevBtn" aria-label="上個月">‹</button>
-        <button class="today-btn" id="todayBtn">今天</button>
         <button class="icon-btn" id="nextBtn" aria-label="下個月">›</button>
         <button class="icon-btn" id="settingsBtn" aria-label="設定">⋯</button>
       </div>
@@ -386,6 +399,8 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
     return "<b>"+esc(e.start||"")+"</b>"+(e.end?esc(e.end):"");
   }
   function renderAgenda(){
+    $("monthBtn").setAttribute("aria-pressed", monthMode);
+    if(monthMode) return renderMonthAgenda();
     var d = parseKey(selected);
     $("dayTitle").textContent = (d.getMonth()+1)+"月"+d.getDate()+"日 星期"+WD[d.getDay()] + (selected===todayKey()?"・今天":"");
     var evs = eventsOn(selected);
@@ -394,7 +409,26 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
       $("list").innerHTML = '<div class="empty">這天沒有行程<br><button type="button" id="emptyAdd">＋ 新增一個</button></div>';
       return;
     }
-    $("list").innerHTML = evs.map(function(e){
+    $("list").innerHTML = evs.map(evCard).join("");
+  }
+  // every event in the viewed month, day by day, each day sorted by time
+  function renderMonthAgenda(){
+    var y = view.getFullYear(), m = view.getMonth(), last = new Date(y, m+1, 0).getDate();
+    var tk = todayKey(), total = 0, h = "";
+    $("dayTitle").textContent = y+"年"+(m+1)+"月 整月行程";
+    for(var i=1;i<=last;i++){
+      var d = new Date(y, m, i), k = keyOf(d), evs = eventsOn(k);
+      if(!evs.length) continue;
+      total += evs.length;
+      h += '<div class="day-group'+(k<tk?' past':'')+'">'+
+        '<button class="day-label'+(d.getDay()===0?' sun':'')+(k===tk?' is-today':'')+'" data-k="'+k+'">'+
+        (m+1)+'/'+i+'<span class="wd">星期'+WD[d.getDay()]+'</span></button>'+
+        evs.map(evCard).join("")+'</div>';
+    }
+    $("dayCount").textContent = total ? total+" 個行程" : "";
+    $("list").innerHTML = h || '<div class="empty">這個月沒有行程<br><button type="button" id="emptyAdd">＋ 新增一個</button></div>';
+  }
+  function evCard(e){
       var c = CAT[e.cat] || CATS[0];
       var meta = '<span class="tag">'+c.name+'</span>' + (e.repeat && e.repeat!=="none" ? '<span>・'+REPEAT_TXT[e.repeat]+'</span>' : '');
       var loc = "";
@@ -408,7 +442,6 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
         '<span class="time">'+fmtRange(e)+'</span>'+
         '<span class="body"><div class="t">'+esc(e.title)+'</div><div class="meta">'+meta+'</div>'+loc+
         (e.note?'<div class="note">'+esc(e.note)+'</div>':'')+'</span></div>';
-    }).join("");
   }
   function render(){ renderMonth(); renderAgenda(); }
   var PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
@@ -416,15 +449,26 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   function mapUrl(q){ return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(q); }
 
   /* ---------- navigation ---------- */
-  function shiftMonth(n){ view = new Date(view.getFullYear(), view.getMonth()+n, 1); renderMonth(); }
+  var monthMode = false;
+  function shiftMonth(n){ view = new Date(view.getFullYear(), view.getMonth()+n, 1); renderMonth(); if(monthMode) renderAgenda(); }
   $("prevBtn").onclick = function(){ shiftMonth(-1); };
   $("nextBtn").onclick = function(){ shiftMonth(1); };
-  $("todayBtn").onclick = function(){ selected = todayKey(); view = parseKey(selected); view.setDate(1); render(); };
+  $("todayBtn").onclick = function(){
+    monthMode = false; selected = todayKey(); view = parseKey(selected); view.setDate(1); render();
+    window.scrollTo({top:0, behavior:"smooth"});
+  };
+  $("monthBtn").onclick = function(){ monthMode = !monthMode; renderAgenda(); };
+  function showDay(k){
+    var d = parseKey(k);
+    monthMode = false; selected = k;
+    if(d.getMonth() !== view.getMonth() || d.getFullYear() !== view.getFullYear()){ view = new Date(d.getFullYear(), d.getMonth(), 1); }
+    render();
+  }
   $("grid").addEventListener("click", function(ev){
     var b = ev.target.closest(".cell"); if(!b) return;
     var k = b.getAttribute("data-k"), d = parseKey(k);
-    if(selected === k){ openEditor(null); return; } // tap selected day again = add
-    selected = k;
+    if(selected === k && !monthMode){ openEditor(null); return; } // tap selected day again = add
+    monthMode = false; selected = k;
     if(d.getMonth() !== view.getMonth() || d.getFullYear() !== view.getFullYear()){ view = new Date(d.getFullYear(), d.getMonth(), 1); }
     render();
   });
@@ -444,6 +488,8 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
   });
   $("list").addEventListener("click", function(ev){
     if(ev.target.id === "emptyAdd"){ openEditor(null); return; }
+    var lbl = ev.target.closest(".day-label");
+    if(lbl){ showDay(lbl.getAttribute("data-k")); window.scrollTo({top:0, behavior:"smooth"}); return; }
     if(ev.target.closest("a")) return; // tapping the map link opens the map, not the editor
     var b = ev.target.closest(".ev"); if(!b) return;
     var i = indexOfId(b.getAttribute("data-id"));
